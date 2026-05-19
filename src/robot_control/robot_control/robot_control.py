@@ -5,25 +5,28 @@ robot_control.py
 흐름:
   manager -> /pick_place_prop (커스텀 처리)
   -> object_detection /get_3d_position(SrvDepthPosition) 호출로 베이스 좌표 획득
-  -> 픽앤플 모션 시퀀스(상공 접근 -> 하강 -> grip -> lift -> Place)
+  -> 픽앤플 모션 시퀀스(스캔 -> 상공 접근 -> 하강 -> grip -> lift -> Place)
+
+좌표는 resource/waypoints.yaml 에서 로드한다 (하드코딩 제거).
 
 두산 코딩 규칙 준수:
   §1 헤더(DR_init id/model, 노드 후 __dsr__node 연결)
   §2 DSR_ROBOT2 import 는 노드 생성 이후 main 내부
-  §4 비동기는 amovel + check_motion 루프 / 여기선 동기 movel 위주
   §5 좌표 .copy() 후 수정
   §10 JReady = posj([0, 0, 90, 0, 90, 0])
 """
 
+import os
+
+import yaml
 import rclpy
 import DR_init
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 
 # ---- 두산 규칙 §1: 기본 설정 ----
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
-VELOCITY = 60
-ACC = 60
 
 DR_init.__dsr__id = ROBOT_ID
 DR_init.__dsr__model = ROBOT_MODEL
@@ -33,11 +36,23 @@ from std_srvs.srv import Trigger                    # noqa: E402
 
 NODE_NAME = "robot_control_node"
 
-# 픽앤플 파라미터 (실로봇 측정 후 waypoints.yaml 로 이관 가능)
-APPROACH_Z = 80.0       # 상공 접근 높이 (mm)
-GRIP_DOWN_Z = 30.0      # 하강 깊이 (mm)
-LIFT_Z = 80.0           # 집은 후 들어올림 (mm)
-PLACE_POSX = [500.0, 200.0, 300.0, 0.0, 180.0, 0.0]   # 소품 전달 구역
+
+def _load_waypoints():
+    """resource/waypoints.yaml 로드. share -> 소스트리 순으로 폴백."""
+    candidates = []
+    try:
+        share = get_package_share_directory("robot_control")
+        candidates.append(os.path.join(share, "resource", "waypoints.yaml"))
+    except Exception:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(here, "..", "resource", "waypoints.yaml"))
+
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}, path
+    return {}, None
 
 
 class RobotControlNode(Node):
@@ -46,10 +61,36 @@ class RobotControlNode(Node):
         self.depth_cli = self.create_client(
             SrvDepthPosition, "/get_3d_position"
         )
-        # manager 가 소품명을 넘겨 픽앤플 1회 수행시키는 트리거 서비스
         self.create_service(
             Trigger, "pick_place_ready", self._on_ready
         )
+
+        # ---- waypoints.yaml 로드 ----
+        cfg, path = _load_waypoints()
+        if path:
+            self.get_logger().info(f"waypoints.yaml 로드: {path}")
+        else:
+            self.get_logger().warn(
+                "waypoints.yaml 없음 - 코드 기본값 사용 (좌표 부정확 가능)")
+
+        self.scan_posx = cfg.get(
+            "scan_posx", [-225.97, -21.78, 720.63, 1.47, -154.73, 85.71])
+        self.place_posx = cfg.get(
+            "place_posx", [348.62, -183.20, 293.75, 89.83, -92.18, -90.08])
+        self.home_joint = cfg.get("home_joint", [0, 0, 90, 0, 90, 0])
+
+        pp = cfg.get("pick_params", {})
+        self.approach_z = pp.get("approach_z", 80.0)
+        self.grip_down_z = pp.get("grip_down_z", 30.0)
+        self.lift_z = pp.get("lift_z", 80.0)
+
+        motion = cfg.get("motion", {})
+        self.velocity = motion.get("velocity", 60)
+        self.acc = motion.get("acc", 60)
+
+        self.get_logger().info(
+            f"scan={self.scan_posx} place={self.place_posx} "
+            f"approach_z={self.approach_z}")
         self.get_logger().info("robot_control 노드 준비 완료")
 
     def _on_ready(self, request, response):
@@ -100,21 +141,27 @@ def main(args=None):
     from robot_control.onrobot import RG2
     gripper = RG2()
 
-    JReady = posj([0, 0, 90, 0, 90, 0])    # 두산 규칙 §10
+    JReady = posj(node.home_joint)    # 두산 규칙 §10 (yaml 로드)
+    VELOCITY = node.velocity
+    ACC = node.acc
 
     def go_home():
         movej(JReady, vel=VELOCITY, acc=ACC)
+
+    def go_scan():
+        """소품 스캔 자세로 이동 (카메라가 선반을 내려다봄)."""
+        movel(posx(node.scan_posx), vel=VELOCITY, acc=ACC, ref=DR_BASE)
 
     def pick_and_place(target_xyz):
         """베이스 좌표계 소품 위치 -> 픽앤플 시퀀스."""
         # §5: 원본 보호 위해 copy 후 수정
         base = list(target_xyz)
         approach = posx([
-            base[0], base[1], base[2] + APPROACH_Z,
+            base[0], base[1], base[2] + node.approach_z,
             base[3], base[4], base[5],
         ])
         grip_pos = approach.copy()
-        grip_pos[2] -= (APPROACH_Z + GRIP_DOWN_Z)
+        grip_pos[2] -= (node.approach_z + node.grip_down_z)
 
         gripper.open()
         movel(approach, vel=VELOCITY, acc=ACC, ref=DR_BASE)
@@ -123,23 +170,22 @@ def main(args=None):
         wait(0.5)
 
         lift = grip_pos.copy()
-        lift[2] += LIFT_Z
+        lift[2] += node.lift_z
         movel(lift, vel=VELOCITY, acc=ACC, ref=DR_BASE)
 
         go_home()
 
-        place = posx(PLACE_POSX)
+        place = posx(node.place_posx)
         movel(place, vel=VELOCITY, acc=ACC, ref=DR_BASE)
         gripper.open()
         wait(0.5)
         go_home()
 
-    # node.get_logger().info("초기 홈 위치 이동")
     go_home()
 
-    # manager 가 별도 채널로 소품명을 넘기는 구조. 여기서는 노드를
-    # 살려두고 spin (서비스 콜백/좌표요청 핸들링).
-    node.pick_and_place = pick_and_place    # manager 연동 훅
+    # manager 연동 훅
+    node.go_scan = go_scan
+    node.pick_and_place = pick_and_place
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
