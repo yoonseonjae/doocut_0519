@@ -33,6 +33,7 @@ setup(
         "console_scripts": [
             "detection = object_detection.detection:main",
             "wearing_check = object_detection.wearing_check:main",
+            "visualize = object_detection.visualize:main",
         ],
     },
 )
