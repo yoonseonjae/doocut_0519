@@ -41,46 +41,6 @@
 
 ## 3. 시나리오 테스트 방법 (터미널 및 사용자 행동 가이드)
 
-테스트를 진행하기 위해 여러 개의 터미널을 띄우거나, 외부 웹 브라우저를 띄워야 합니다.
-
-### [터미널 1] 로봇 드라이버 실행 (필수)
-가장 먼저 두산 로봇 드라이버를 실행하여 로봇과 연결해야 합니다.
-```bash
-# 로컬 터미널에서 로봇 구동 (설정해둔 alias 사용)
-roboton
-```
-
-### [터미널 2] 도커 내부: 메인 시스템 실행 (필수)
-기존에는 realsense 노드, object_detection 노드 등을 따로 켰으나, 현재는 `system.launch.py` 파일 하나에 카메라 구동(pyrealsense2 직접 제어)부터 비전, 매니저 노드까지 모두 포함되어 있습니다.
-1. 도커 컨테이너에 접속합니다 (`docker exec -it <도커_컨테이너_이름> bash`).
-2. 아래 명령어를 실행합니다.
-```bash
-cd ~/doocut_ws
-colcon build --symlink-install
-source install/setup.bash
-ros2 launch doocut_bringup system.launch.py
-```
-> **실행 후 확인:** 터미널 로그에 `manager 노드 준비 완료`가 뜨면서 로봇이 "원하시는 컨셉을 말씀해 주세요"라고 말하면 시나리오가 시작된 것입니다.
-
-### [호스트 PC] 웹 브라우저: 결과 확인용 화면 (필수)
-도커 내부가 아닌, **여러분의 PC (우분투/윈도우/맥) 바탕화면**에서 크롬 등의 웹 브라우저를 엽니다.
-1. 주소창에 `http://localhost:8080` (또는 지정한 포트/ngrok 주소)를 입력하고 접속합니다.
-2. 테스트 중에는 "아직 완성된 사진이 없습니다"라고 뜨지만, 촬영 시나리오가 끝나면 이 화면에 완성된 콜라주 사진과 QR 코드가 뜹니다.
-
-### [터미널 3] 도커 내부: 에러 모니터링 및 시각화 테스트 (선택)
-디버깅이 필요할 경우 도커 컨테이너로 접속한 새로운 터미널을 열어둡니다.
-```bash
-docker exec -it <도커_컨테이너_이름> bash
-cd ~/doocut_ws
-source install/setup.bash
-```
-- **비전(YOLO) 시각화 테스트:** 바운딩 박스와 확률(confidence) 수치를 이미지 창으로 직접 보고 싶을 때 사용합니다. (주의: `system.launch.py`와 동시에 실행하면 카메라 접근 에러가 발생하므로 단독으로 실행해야 합니다)
-  ```bash
-  ros2 run object_detection visualize
-  ```
-- 특정 토픽을 확인하거나(`ros2 topic echo /tts`),
-- 비전 테스트만 따로 하고 싶을 때(`ros2 launch doocut_bringup vision_only.launch.py`) 사용합니다.
-
 ---
 
 ## 4. 테스트 진행 시 사용자 행동 요령
