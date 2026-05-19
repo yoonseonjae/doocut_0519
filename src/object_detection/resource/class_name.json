@@ -1,0 +1,13 @@
+{
+  "_comment": "스캘폴드. P2 가 Roboflow 라벨링 클래스 셋을 확정한 뒤, 학습 data.yaml 의 names 순서와 정확히 일치하도록 실값으로 교체할 것. 키는 클래스 id(문자열), 값은 클래스명. theme_map.yaml 의 props/required_wearing 클래스명과 반드시 동일해야 함.",
+  "_status": "SCAFFOLD - Day3 best.pt 학습 시점에 확정",
+  "0": "crown",
+  "1": "face",
+  "2": "necklace",
+  "3": "person",
+  "4": "prop_on_shelf",
+  "5": "shovel",
+  "6": "straw_hat",
+  "7": "sunglasses",
+  "8": "wand"
+}

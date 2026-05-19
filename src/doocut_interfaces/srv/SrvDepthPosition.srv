@@ -1,0 +1,15 @@
+# SrvDepthPosition.srv
+# 선반 위 소품 클래스명을 받아 RealSense depth + 핀홀모델 + 핸드아이
+# 변환을 거쳐 베이스 좌표계 3D 위치(mm)를 반환한다.
+# object_detection/detection.py 가 서버, robot_control 이 클라이언트.
+
+# --- Request ---
+string target            # 찾을 소품 클래스명 (예: "crown")
+---
+# --- Response ---
+bool    success          # 탐지 + 좌표 변환 성공 여부
+# 베이스 좌표계 기준 [x, y, z, rx, ry, rz] (mm / deg)
+# 실패 시 길이 0 또는 전부 0.0
+float64[] depth_position
+float64 confidence       # YOLO 탐지 신뢰도 (0.0 ~ 1.0)
+string  message          # 실패 사유 등 부가 메시지

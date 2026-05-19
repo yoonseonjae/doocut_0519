@@ -1,0 +1,16 @@
+# CheckWearing.srv
+# 손목 카메라로 사용자를 비춰, 얼굴(face) 기준으로 지정된 소품들이
+# 착용되었는지 Bounding Box IoU 로 판별한다.
+# object_detection/wearing_check.py 가 서버, photo_booth_manager 가 클라이언트.
+
+# --- Request ---
+# 착용을 확인할 소품 클래스 리스트 (테마별 3종 등)
+string[] required_props
+float64  iou_threshold    # IoU 임계값 (0.0 이면 서버 기본값 사용)
+---
+# --- Response ---
+bool     all_worn         # 요청한 소품이 전부 착용되었는지
+string[] worn_props       # 실제 착용 확인된 소품 리스트
+string[] missing_props    # 미착용 소품 리스트
+float64[] iou_scores      # worn_props 와 동일 순서의 IoU 점수
+string   message          # 부가 메시지 (예: "face not detected")

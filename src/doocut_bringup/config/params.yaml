@@ -1,0 +1,44 @@
+# params.yaml  (스캘폴드)
+# 환경 셋업(로봇 IP, ROS_DOMAIN_ID, 경로 등) 확정 후 실값으로 교체.
+# 런치에서 노드별 파라미터로 로드하도록 확장 가능.
+_status: "SCAFFOLD - 환경 셋업 후 확정"
+
+global:
+  robot_id: "dsr01"
+  robot_model: "m0609"
+  ros_domain_id: 30          # 실제 데모 네트워크 값으로 교체
+  robot_ip: "192.168.1.100"  # 두산 컨트롤러 IP (환경 확인 후 교체)
+
+gripper:
+  type: "rg2"                # rg2 / 2fg / da
+  modbus_ip: "192.168.1.1"
+  modbus_port: 502
+  modbus_unit: 65
+
+camera:
+  realsense_color: [1280, 720, 30]
+  realsense_depth: [640, 480, 30]
+  depth_offset_mm: -5.0
+  min_depth_mm: 2.0
+
+motion:
+  velocity_safe: 30
+  velocity_mid: 60
+  velocity_fast: 120
+  acc_default: 60
+
+paths:
+  best_pt: ""                # 비우면 yolo.py resolver 가 resource/best.pt 탐색
+  handeye_npy: ""            # 비우면 resolver 가 resource/T_gripper2camera.npy 탐색
+  class_name_json: ""        # 비우면 resource/class_name.json
+  captures_dir: ""           # 비우면 패키지 내 captures/
+  output_dir: ""             # 비우면 패키지 내 static/output/
+
+web:
+  host: "0.0.0.0"
+  port: 8080
+  use_ngrok: false
+
+voice:
+  stt_record_seconds: 5
+  gpt_model: "gpt-4o"

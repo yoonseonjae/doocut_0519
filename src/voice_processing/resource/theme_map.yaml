@@ -1,0 +1,25 @@
+# theme_map.yaml
+# 테마 -> 소품 리스트 / 인식 키워드 / 표시명 / TTS 멘트 매핑.
+# get_keyword.py 가 로드한다. 클래스명은 object_detection 의
+# class_name.json 라벨과 정확히 일치해야 한다.
+
+themes:
+  beach:
+    display_name: "해변 휴양지"
+    keywords: ["해변", "휴양지", "바다", "여름", "beach", "해변가", "비치"]
+    props: ["straw_hat", "sunglasses", "shovel"]
+    background: "sandy_beach"
+    tts_intro: "해변 휴양지 컨셉으로 준비할게요. 멋진 휴가 사진을 찍어드릴게요."
+    required_wearing: ["straw_hat", "sunglasses"]   # 착용검사 핵심 2종
+
+  princess:
+    display_name: "동화 속 공주"
+    keywords: ["공주", "동화", "프린세스", "왕관", "princess", "공주님"]
+    props: ["crown", "necklace", "wand"]
+    background: "fairytale"
+    tts_intro: "동화 속 공주님 컨셉으로 준비할게요. 우아한 사진을 찍어드릴게요."
+    required_wearing: ["crown", "necklace"]
+
+# 테마 매칭 실패 시 안내 멘트
+fallback:
+  tts_message: "원하시는 컨셉을 다시 한번 말씀해 주세요. 해변 또는 공주 컨셉이 가능합니다."
