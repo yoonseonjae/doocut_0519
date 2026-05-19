@@ -67,13 +67,17 @@ ros2 launch doocut_bringup system.launch.py
 1. 주소창에 `http://localhost:8080` (또는 지정한 포트/ngrok 주소)를 입력하고 접속합니다.
 2. 테스트 중에는 "아직 완성된 사진이 없습니다"라고 뜨지만, 촬영 시나리오가 끝나면 이 화면에 완성된 콜라주 사진과 QR 코드가 뜹니다.
 
-### [터미널 2] 도커 내부: 에러 모니터링 또는 개별 노드 제어 (선택)
-디버깅이 필요할 경우 도커 컨테이너로 접속한 두 번째 터미널을 열어둡니다.
+### [터미널 3] 도커 내부: 에러 모니터링 및 시각화 테스트 (선택)
+디버깅이 필요할 경우 도커 컨테이너로 접속한 새로운 터미널을 열어둡니다.
 ```bash
 docker exec -it <도커_컨테이너_이름> bash
 cd ~/doocut_ws
 source install/setup.bash
 ```
+- **비전(YOLO) 시각화 테스트:** 바운딩 박스와 확률(confidence) 수치를 이미지 창으로 직접 보고 싶을 때 사용합니다. (주의: `system.launch.py`와 동시에 실행하면 카메라 접근 에러가 발생하므로 단독으로 실행해야 합니다)
+  ```bash
+  ros2 run object_detection visualize
+  ```
 - 특정 토픽을 확인하거나(`ros2 topic echo /tts`),
 - 비전 테스트만 따로 하고 싶을 때(`ros2 launch doocut_bringup vision_only.launch.py`) 사용합니다.
 
