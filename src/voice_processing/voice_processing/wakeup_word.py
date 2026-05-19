@@ -80,6 +80,9 @@ class WakeupWord:
 
         best_label = max(predictions, key=predictions.get)
         best_score = predictions[best_label]
+        
+        print(f"confidence: {best_score:.10f}")
+
         if best_score < threshold:
             return None
 
