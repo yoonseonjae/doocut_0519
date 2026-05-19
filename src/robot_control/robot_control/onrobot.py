@@ -20,7 +20,7 @@ class RG2:
 
     def _connect(self):
         try:
-            from pymodbus.client import ModbusTcpClient
+            from pymodbus.client.sync import ModbusTcpClient
             self.client = ModbusTcpClient(self.ip, port=self.port)
             self._connected = self.client.connect()
             if not self._connected:

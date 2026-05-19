@@ -14,10 +14,10 @@ setup(
             ["resource/" + package_name],
         ),
         ("share/" + package_name, ["package.xml"]),
-        # theme_map.yaml 을 share/resource 로 설치 (get_keyword 가 로드)
+        # [수정 완료] theme_map.yaml, .env 뿐만 아니라 .tflite 커스텀 모델 파일도 함께 share/resource로 빌드/설치되도록 지정
         (
             os.path.join("share", package_name, "resource"),
-            glob("resource/*.yaml") + glob("resource/.env"),
+            glob("resource/*.yaml") + glob("resource/.env") + glob("resource/*.tflite"),
         ),
     ],
     install_requires=["setuptools"],

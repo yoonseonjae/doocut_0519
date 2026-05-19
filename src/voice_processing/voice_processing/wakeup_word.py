@@ -1,53 +1,46 @@
 """
-wakeup_word.py
-2종 웨이크워드 감지 모듈.
-  - 1st: "안녕 두봇"   -> 테마 주문 단계 진입
-  - 2nd: "사진 찍어줘" -> 동적 촬영 모션 트리거
-
-openWakeWord 모델이 있으면 사용하고, 없으면 STT 텍스트 매칭 폴백으로
-동작하도록 이중화했다. (Day1~2 데모 안정성 확보용)
+wakeup_word.py (Hello Rokey 커스텀 모델 적용 버전)
+48kHz 오디오를 16kHz로 다운샘플링하여 openWakeWord 커스텀 모델을 구동합니다.
 """
 
 import os
 import numpy as np
+from openwakeword.model import Model
+from scipy.signal import resample
+from ament_index_python.packages import get_package_share_directory
 
+# 기존 시스템 호환성을 위해 리턴 상수 이름은 그대로 유지합니다.
+WAKEUP_HELLO = "hello_doobot"     
+WAKEUP_SHOOT = "take_photo"       
 
-# 웨이크워드 라벨 상수 (manager / get_keyword 에서 import 해 사용)
-WAKEUP_HELLO = "hello_doobot"     # "안녕 두봇"
-WAKEUP_SHOOT = "take_photo"       # "사진 찍어줘"
-
-# STT 폴백 매칭용 한국어 트리거 문구
-_HELLO_PHRASES = ["안녕 두봇", "안녕두봇", "두봇 안녕", "헬로 두봇"]
-_SHOOT_PHRASES = ["사진 찍어", "사진찍어", "찍어줘", "촬영해", "사진 찍어줘"]
-
+# STT 폴백 매칭용 한국어 트리거 문구 (혹시 모를 STT 대비용)
+_HELLO_PHRASES = ["헬로 로키", "헬로로키", "헬로우 로키"]
 
 class WakeupWord:
-    def __init__(self, buffer_size=24000, model_dir=None):
+    def __init__(self, buffer_size=24000):
         self.buffer_size = buffer_size
         self.model = None
-        self.model_name = None
+        # 모델명에서 확장자를 제외한 이름이 딕셔너리 키(key)가 됩니다.
+        self.model_name = "hello_rokey_8332_32" 
         self.stream = None
         self._oww_available = False
-        self._try_load_oww(model_dir)
+        self._try_load_custom_model()
 
-    def _try_load_oww(self, model_dir):
-        """openWakeWord 로드 시도. 실패 시 STT 폴백 모드."""
+    def _try_load_custom_model(self):
+        """fruit 프로젝트에서 가져온 커스텀 tflite 모델 로드"""
         try:
-            from openwakeword.model import Model
-            if model_dir and os.path.isdir(model_dir):
-                paths = [
-                    os.path.join(model_dir, f)
-                    for f in os.listdir(model_dir)
-                    if f.endswith((".onnx", ".tflite"))
-                ]
-                if paths:
-                    self.model = Model(wakeword_models=paths)
-                    self._oww_available = True
-            if self.model is None:
-                self.model = Model()          # 기본 사전학습 모델
+            share = get_package_share_directory("voice_processing")
+            model_path = os.path.join(share, "resource", f"{self.model_name}.tflite")
+            
+            if os.path.exists(model_path):
+                self.model = Model(wakeword_models=[model_path])
                 self._oww_available = True
+                print(f"[WakeupWord] 헬로 로키 모델 로드 성공: {model_path}", flush=True)
+            else:
+                print(f"[WakeupWord] 에러: 모델 파일을 찾을 수 없습니다 -> {model_path}", flush=True)
+                
         except Exception as e:
-            print(f"[WakeupWord] openWakeWord 미사용 (STT 폴백): {e}")
+            print(f"[WakeupWord] openWakeWord 초기화 실패: {e}", flush=True)
             self._oww_available = False
 
     def set_stream(self, stream):
@@ -57,11 +50,10 @@ class WakeupWord:
     def available(self):
         return self._oww_available
 
-    def is_wakeup(self, threshold=0.5):
+    def is_wakeup(self, threshold=0.3):
         """
-        오디오 스트림에서 웨이크워드 1회 감지 시도.
-        반환: WAKEUP_HELLO / WAKEUP_SHOOT / None
-        openWakeWord 미사용 환경에서는 항상 None -> get_keyword 가 STT 폴백 사용.
+        오디오 스트림에서 '헬로 로키' 1회 감지 시도.
+        반환: WAKEUP_HELLO / None
         """
         if not self._oww_available or self.stream is None:
             return None
@@ -71,40 +63,37 @@ class WakeupWord:
                 self.stream.read(self.buffer_size, exception_on_overflow=False),
                 dtype=np.int16,
             )
-        except Exception:
+            # [핵심] 48000Hz 마이크 입력을 모델이 좋아하는 16000Hz로 다운샘플링
+            audio_chunk = resample(audio_chunk, int(len(audio_chunk) * 16000 / 48000))
+            
+        except Exception as e:
+            print(f"[WakeupWord] 오디오 읽기 에러: {e}", flush=True)
             return None
 
+        # 예측 수행
         predictions = self.model.predict(audio_chunk)
         if not predictions:
             return None
 
-        best_label = max(predictions, key=predictions.get)
-        best_score = predictions[best_label]
+        # 커스텀 모델의 점수 확인
+        confidence = predictions.get(self.model_name, 0.0)
         
-        print(f"confidence: {best_score:.10f}")
+        # 실시간 점수 출력 (테스트 시 값이 튀는지 확인 용도)
+        print(f"Rokey Confidence: {confidence:.4f}", flush=True)
 
-        if best_score < threshold:
-            return None
-
-        label_low = best_label.lower()
-        if "hello" in label_low or "hey" in label_low or "doobot" in label_low:
+        if confidence > threshold:
+            print("🎉 WakeWord Detected: 헬로 로키!", flush=True)
+            # 시스템은 1번(안녕 두봇)이든 2번(사진 찍어줘)이든 모두 WAKEUP_HELLO 트리거로 통일해서 처리하게 됩니다.
             return WAKEUP_HELLO
-        if "photo" in label_low or "shoot" in label_low or "picture" in label_low:
-            return WAKEUP_SHOOT
-        return WAKEUP_HELLO     # 기본 단일모델이면 1st 로 간주
+            
+        return None
 
     @staticmethod
     def match_text(text: str):
-        """
-        STT 폴백: 인식된 문장에서 웨이크워드 종류 판별.
-        반환: WAKEUP_HELLO / WAKEUP_SHOOT / None
-        """
+        """ STT 폴백 """
         if not text:
             return None
         t = text.replace(" ", "")
-        for p in _SHOOT_PHRASES:
-            if p.replace(" ", "") in t:
-                return WAKEUP_SHOOT
         for p in _HELLO_PHRASES:
             if p.replace(" ", "") in t:
                 return WAKEUP_HELLO
