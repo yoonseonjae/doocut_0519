@@ -2,20 +2,16 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>doocut_bringup</name>
-  <version>0.1.0</version>
-  <description>인생DOO컷 통합 런치 + config (system / vision_only / debug)</description>
-  <maintainer email="team@doocut.local">doocut_team</maintainer>
+  <version>0.0.0</version>
+  <description>Launch package for doocut scene-based pick and place system</description>
+  <maintainer email="rokey@todo.todo">rokey</maintainer>
   <license>Apache-2.0</license>
 
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
   <exec_depend>voice_processing</exec_depend>
   <exec_depend>object_detection</exec_depend>
   <exec_depend>robot_control</exec_depend>
-  <exec_depend>doocut_tts</exec_depend>
-  <exec_depend>photo_booth_manager</exec_depend>
-  <exec_depend>doocut_interfaces</exec_depend>
 
+  <buildtool_depend>ament_python</buildtool_depend>
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

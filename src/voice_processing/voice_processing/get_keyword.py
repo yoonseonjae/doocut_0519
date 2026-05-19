@@ -1,135 +1,135 @@
-"""
-get_keyword.py (단일 인식 후 종료 버전)
-  - 노드 실행 시 상시 대기하지 않고, 서비스 요청이 올 때만 마이크를 엽니다.
-  - "헬로 로키"가 한 번 인식되면 STT/GPT 분석 후 즉시 결과를 반환하고 마이크를 닫습니다.
-"""
+# ros2 service call /get_keyword std_srvs/srv/Trigger "{}"
+# 응답 형식: "<scene> <prop1> <prop2> ..."  예) "beach umbrella bucket starfish"
 
 import os
-import time
-import yaml
 import rclpy
+import pyaudio
 from rclpy.node import Node
+
 from ament_index_python.packages import get_package_share_directory
-
-from doocut_interfaces.srv import GetTheme
-
-from voice_processing.MicController import MicController, MicConfig
-from voice_processing.wakeup_word import WakeupWord, WAKEUP_HELLO
-from voice_processing.STT import STT
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 
-NODE_NAME = "get_keyword_node"
+from std_srvs.srv import Trigger
+from voice_processing.MicController import MicController, MicConfig
+from voice_processing.wakeup_word import WakeupWord
+from voice_processing.stt import STT
+from voice_processing.scene_keyword_extractor import SceneKeywordExtractor
 
-def _load_theme_map():
-    candidates = []
-    try:
-        share = get_package_share_directory("voice_processing")
-        candidates.append(os.path.join(share, "resource", "theme_map.yaml"))
-    except Exception:
-        pass
-    for path in candidates:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-    return {}
+############ Package Path & Environment Setting ############
 
-class GetKeywordNode(Node):
+#----------------------------------------------------------------
+# current_dir = os.getcwd()
+# package_path = get_package_share_directory("pick_and_place_voice")
+
+# env_path = "/home/rokey/cobot_ws/src/cobot2_ws/pick_and_place_voice/resource/.env"
+# load_dotenv(dotenv_path=env_path)
+# is_load = load_dotenv(dotenv_path=os.path.join(f"{package_path}/resource/.env"))
+# openai_api_key = os.getenv("OPENAI_API_KEY")
+#-----------------------------------------------------------------
+
+PACKAGE_NAME = "voice_processing"
+PACKAGE_PATH = get_package_share_directory(PACKAGE_NAME)
+RESOURCE_PATH = os.path.join(PACKAGE_PATH, "resource")
+ENV_PATH = os.path.join(RESOURCE_PATH, ".env")
+load_dotenv(dotenv_path=ENV_PATH)
+openai_api_key = os.getenv("OPENAI_API_KEY")
+
+############ AI Processor ############
+# class AIProcessor:
+#     def __init__(self):
+
+
+
+############ GetKeyword Node ############
+class GetKeyword(Node):
     def __init__(self):
-        super().__init__(NODE_NAME)
-        self.theme_map = _load_theme_map()
-        self.themes = self.theme_map.get("themes", {})
-        
-        self.mic = MicController(MicConfig())
-        self.wakeup = WakeupWord(buffer_size=MicConfig.buffer_size)
-        
-        _env_path = os.path.join(get_package_share_directory("voice_processing"), "resource", ".env")
-        load_dotenv(dotenv_path=_env_path)
-        self.stt = STT(record_seconds=5)
 
-        self._gpt = None
-        api_key = os.getenv("OPENAI_API_KEY")
-        if api_key:
-            try:
-                from openai import OpenAI
-                self._gpt = OpenAI(api_key=api_key)
-            except Exception as e:
-                self.get_logger().warn(f"GPT 비활성: {e}")
+        print(PACKAGE_PATH, RESOURCE_PATH, ENV_PATH)
 
-        self.srv = self.create_service(GetTheme, "get_theme", self.handle_get_theme)
-        self.get_logger().info("GetTheme 서버 준비 완료 (단일 인식 모드)")
+        # LLM: scene_keyword_extractor의 fallback용으로만 사용
+        self.llm = ChatOpenAI(
+            model="gpt-4o", temperature=0.2, openai_api_key=openai_api_key
+        )
+        self.scene_extractor = SceneKeywordExtractor(llm=self.llm)
+        self.stt = STT(openai_api_key=openai_api_key)
 
-    def _extract_theme(self, text: str) -> str:
-        keys = list(self.themes.keys())
-        if not text or self._gpt is None:
-            return ""
+        super().__init__("get_keyword_node")
+        # 오디오 설정 (기존 그대로)
+        mic_config = MicConfig(
+            chunk=12000,
+            rate=48000,
+            channels=1,
+            record_seconds=5,
+            fmt=pyaudio.paInt16,
+            device_index=10,
+            buffer_size=24000,
+        )
+        self.mic_controller = MicController(config=mic_config)
+
+        self.get_logger().info("GetKeyword (scene mode) initialized.")
+        self.get_logger().info("wait for client's request...")
+        self.get_keyword_srv = self.create_service(
+            Trigger, "get_keyword", self.get_keyword
+        )
+        self.wakeup_word = WakeupWord(mic_config.buffer_size)
+
+    def extract_keyword(self, utterance: str) -> list[str]:
+        """
+        STT 결과에서 scene을 추출하고 해당 소품 목록을 반환합니다.
+        반환: [scene, prop1, prop2, ...] 형태의 리스트
+        """
+        scene = self.scene_extractor.extract_scene(utterance)
+        if scene is None:
+            self.get_logger().warn(f"No scene matched for utterance: '{utterance}'")
+            return []
+
+        props = self.scene_extractor.get_props(scene)
+        self.get_logger().info(f"Scene: '{scene}' → props: {props}")
+        return [scene] + props
+    
+    def get_keyword(self, request, response):
+        """서비스 핸들러. 응답 형식: '<scene> <prop1> <prop2> ...'"""
         try:
-            sys_prompt = f"사진부스 테마 분류기다. 후보: {keys}. 키워드 하나만 출력해라. 없으면 'none'."
-            resp = self._gpt.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}],
-                temperature=0.0,
-            )
-            cand = resp.choices[0].message.content.strip().lower()
-            return cand if cand in self.themes else ""
-        except Exception:
-            return ""
-
-    def handle_get_theme(self, request, response):
-        self.get_logger().info("🎙️ '헬로 로키' 대기를 시작합니다...")
-        
-        # 1. 마이크 오픈 및 스트림 연결
-        self.mic.open_stream()
-        self.wakeup.set_stream(self.mic.stream)
-        
-        detected = False
-        start_wait = time.time()
-        timeout = 30.0 # 30초 동안 인식 없으면 종료
-
-        # 2. 웨이크워드 감지 루프 (인식될 때까지만 수행)
-        while rclpy.ok():
-            if (time.time() - start_wait) > timeout:
-                break
-
-            if self.wakeup.is_wakeup(threshold=0.3) == WAKEUP_HELLO:
-                self.get_logger().info("🎯 감지 성공! 분석 시작.")
-                detected = True
-                break # 🔴 웨이크워드 인식 즉시 루프 탈출 (한 번만 수행)
-            
-            time.sleep(0.01)
-
-        if not detected:
+            print("open stream")
+            self.mic_controller.open_stream()
+            self.wakeup_word.set_stream(self.mic_controller.stream)
+        except OSError:
+            self.get_logger().error("Error: Failed to open audio stream")
+            self.get_logger().error("please check your device index")
             response.success = False
-            response.message = "인식 실패 또는 타임아웃"
-            self.mic.close_stream()
+            response.message = "audio_error"
             return response
 
-        # 3. 음성 분석 (STT -> GPT)
-        text = self.stt.speech2text(self.mic)
-        theme = self._extract_theme(text)
-        info = self.themes.get(theme, {})
+        # wake word 감지 대기 (기존 wakeup_word.py 그대로)
+        while not self.wakeup_word.is_wakeup():
+            pass
 
-        # 4. 결과 설정
-        response.success = True if theme else False
-        response.theme = theme
-        response.props = list(info.get("props", []))
-        response.message = info.get("display_name", theme)
-        
-        # 5. 마이크 닫기 (작업 종료)
-        self.mic.close_stream()
-        self.get_logger().info(f"✅ 분석 완료: {theme}. 마이크를 닫습니다.")
-        
+        # STT → Scene 추출 → Props 반환
+        utterance = self.stt.speech2text()
+        self.get_logger().info(f"STT result: '{utterance}'")
+
+        result = self.extract_keyword(utterance)  # [scene, prop1, prop2, ...]
+
+        if not result:
+            self.get_logger().warn("Failed to extract scene from utterance.")
+            response.success = False
+            response.message = "no_scene"
+            return response
+
+        self.get_logger().warn(f"Scene + Props: {result}")
+        response.success = True
+        response.message = " ".join(result)  # "beach umbrella bucket starfish"
         return response
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = GetKeywordNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+
+def main():  # d2 메인문 일부 수정
+    rclpy.init()
+    node = GetKeyword()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()

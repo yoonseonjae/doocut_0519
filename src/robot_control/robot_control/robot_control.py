@@ -1,228 +1,274 @@
-#!/usr/bin/env python3
-"""
-robot_control.py
-소품 픽앤플레이스 메인 제어 노드 (매니저 연동 완벽 수정본)
-"""
-
 import os
 import time
-import threading
+import sys
 import yaml
+from scipy.spatial.transform import Rotation
+import numpy as np
 import rclpy
-import DR_init
 from rclpy.node import Node
-from ament_index_python.packages import get_package_share_directory
+import DR_init
 
-# ---- 두산 규칙 §1: 기본 설정 ----
+from od_msg.srv import SrvDepthPosition
+from std_srvs.srv import Trigger
+from ament_index_python.packages import get_package_share_directory
+from robot_control.onrobot import RG
+
+package_path = get_package_share_directory("robot_control")
+
+# for single robot
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
+VELOCITY, ACC = 60, 60
+JHOME_POS = [0, 0, 90, 0, 90, 0]
+GRIPPER_NAME = "rg2"
+TOOLCHARGER_IP = "192.168.1.1"
+TOOLCHARGER_PORT = "502"
+DEPTH_OFFSET = -5.0
+MIN_DEPTH = 2.0
+
+# ===== 웨이포인트 로드 (waypoints.yaml) =====
+_wp_path = os.path.join(package_path, "resource", "waypoints.yaml")
+with open(_wp_path, "r") as _f:
+    _wp = yaml.safe_load(_f)
+SCAN_POSITION  = _wp["scan_position"]["joint"]   # [j1..j6]
+DROP_POSITION  = _wp["drop_position"]["joint"]    # [j1..j6] ← joint 방식으로 변경
+HOME_POSITION  = _wp["home"]["joint"]             # [j1..j6]
+
 
 DR_init.__dsr__id = ROBOT_ID
 DR_init.__dsr__model = ROBOT_MODEL
 
-from doocut_interfaces.srv import SrvDepthPosition  # noqa: E402
-from std_srvs.srv import Trigger                    # noqa: E402
+rclpy.init()
+dsr_node = rclpy.create_node("robot_control_node", namespace=ROBOT_ID)
+DR_init.__dsr__node = dsr_node
 
-NODE_NAME = "robot_control_node"
+try:
+    from DSR_ROBOT2 import (
+        movej, movel, get_current_posx, mwait, trans, check_motion
+    )
+except ImportError as e:
+    print(f"Error importing DSR_ROBOT2: {e}")
+    sys.exit()
 
-def _load_waypoints():
-    """resource/waypoints.yaml 로드. share -> 소스트리 순으로 폴백."""
-    candidates = []
-    try:
-        share = get_package_share_directory("robot_control")
-        candidates.append(os.path.join(share, "resource", "waypoints.yaml"))
-    except Exception:
-        pass
-    here = os.path.dirname(os.path.abspath(__file__))
-    candidates.append(os.path.join(here, "..", "resource", "waypoints.yaml"))
+########### Gripper Setup. Do not modify this area ############
 
-    for path in candidates:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}, path
-    return {}, None
+gripper = RG(GRIPPER_NAME, TOOLCHARGER_IP, TOOLCHARGER_PORT)
 
 
-class RobotControlNode(Node):
+########### Robot Controller ############
+
+
+class RobotController(Node):
     def __init__(self):
-        super().__init__(NODE_NAME, namespace=ROBOT_ID)
-        self.depth_cli = self.create_client(
+        super().__init__("pick_and_place")
+        self.init_robot()
+
+        self.get_position_client = self.create_client(
             SrvDepthPosition, "/get_3d_position"
         )
-        
-        # 🟢 [수정 핵심] 매니저 노드에서 찌를 수 있는 2개의 스위치(서비스) 개통
-        self.create_service(Trigger, "pick_place_ready", self._on_ready)
-        self.create_service(Trigger, "pick_place_service", self._on_pick)
+        while not self.get_position_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().info("Waiting for get_depth_position service...")
+        self.get_position_request = SrvDepthPosition.Request()
 
-        # 🟢 로봇 모션을 비동기로 처리하기 위한 이벤트 신호기
-        self.ready_event = threading.Event()
-        self.pick_event = threading.Event()
+        self.get_keyword_client = self.create_client(Trigger, "/get_keyword")
+        while not self.get_keyword_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().info("Waiting for get_keyword service...")
+        self.get_keyword_request = Trigger.Request()
 
-        # ---- waypoints.yaml 로드 ----
-        cfg, path = _load_waypoints()
-        if path:
-            self.get_logger().info(f"waypoints.yaml 로드: {path}")
-        else:
-            self.get_logger().warn("waypoints.yaml 없음 - 코드 기본값 사용 (좌표 부정확 가능)")
+    def get_robot_pose_matrix(self, x, y, z, rx, ry, rz):
+        R = Rotation.from_euler("ZYZ", [rx, ry, rz], degrees=True).as_matrix()
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = [x, y, z]
+        return T
 
-        self.scan_posx = cfg.get("scan_posx", [-225.97, -21.78, 720.63, 1.47, -154.73, 85.71])
-        self.place_posx = cfg.get("place_posx", [348.62, -183.20, 293.75, 89.83, -92.18, -90.08])
-        self.home_joint = cfg.get("home_joint", [0, 0, 90, 0, 90, 0])
+    def transform_to_base(self, camera_coords, gripper2cam_path, robot_pos):
+        """
+        Converts 3D coordinates from the camera coordinate system
+        to the robot's base coordinate system.
+        """
+        gripper2cam = np.load(gripper2cam_path)
+        coord = np.append(np.array(camera_coords), 1)
 
-        pp = cfg.get("pick_params", {})
-        self.approach_z = pp.get("approach_z", 80.0)
-        self.grip_down_z = pp.get("grip_down_z", 30.0)
-        self.lift_z = pp.get("lift_z", 80.0)
+        x, y, z, rx, ry, rz = robot_pos
+        base2gripper = self.get_robot_pose_matrix(x, y, z, rx, ry, rz)
 
-        motion = cfg.get("motion", {})
-        self.velocity = motion.get("velocity", 60)
-        self.acc = motion.get("acc", 60)
+        base2cam = base2gripper @ gripper2cam
+        td_coord = np.dot(base2cam, coord)
 
-        self.get_logger().info(f"scan={self.scan_posx} place={self.place_posx} approach_z={self.approach_z}")
-        self.get_logger().info("✅ robot_control 노드 통신 스위치 준비 완료")
+        return td_coord[:3]
 
-    # 🟢 스위치 1번: Ready 호출 시 스레드 트리거
-    def _on_ready(self, request, response):
-        self.ready_event.set()
-        response.success = True
-        response.message = "스캔 위치(Ready) 이동 명령 수락"
-        return response
-
-    # 🟢 스위치 2번: Pick 호출 시 스레드 트리거
-    def _on_pick(self, request, response):
-        self.pick_event.set()
-        response.success = True
-        response.message = "픽업(Pick & Place) 시퀀스 명령 수락"
-        return response
-
-    # 🟢 [수정 핵심] ROS 충돌(Deadlock)을 방지하는 안전한 비전 좌표 획득 로직
-    def request_position(self, target: str, timeout=5.0):
-        if not self.depth_cli.wait_for_service(timeout_sec=timeout):
-            self.get_logger().error("/get_3d_position 비전 서비스 없음")
-            return None
-            
-        req = SrvDepthPosition.Request()
-        req.target = target
-        future = self.depth_cli.call_async(req)
-        
-        # spin_until_future_complete 대신 스레드 안전하게 대기
-        end_time = time.time() + timeout
-        while not future.done() and time.time() < end_time and rclpy.ok():
+    # ============================================================
+    # mwait() 대신 check_motion() 폴링 사용 (더 안전)
+    # check_motion(): 0=Idle(완료), 1=Init, 2=Busy
+    # ============================================================
+    def wait_motion(self, timeout=30.0):
+        time.sleep(0.2)
+        start = time.time()
+        while rclpy.ok():
+            state = check_motion()
+            if state == 0:
+                self.get_logger().info("  -> motion done")
+                return True
+            if time.time() - start > timeout:
+                self.get_logger().error(f"  -> motion TIMEOUT (state={state})")
+                return False
             time.sleep(0.1)
-            
-        if future.done():
-            res = future.result()
-            if res and res.success:
-                return list(res.depth_position)
-                
-        self.get_logger().warn(f"'{target}' 좌표 획득 실패 혹은 타임아웃")
-        return None
+        return False
+
+    def wait_gripper(self, sec=2.0):
+        """그리퍼 동작 완료 대기."""
+        # 그리퍼 상태 폴링 + 안전 시간 확보
+        start = time.time()
+        while gripper.get_status()[0]:
+            time.sleep(0.2)
+            if time.time() - start > sec * 2:
+                break
+        time.sleep(sec)
+
+    def robot_control(self):
+        """
+        메인 실행 루프.
+        1. get_keyword 서비스 호출 → scene + props 파싱
+        2. scan_position 이동 (카메라 스캔 자세)
+        3. 소품별 반복: get_target_pos → pick_and_place_target → drop
+        """
+        self.get_logger().info("[robot_control] Calling get_keyword service...")
+        self.get_logger().info("Say 'Hello Rokey' then describe the scene (예: 해변가)")
+
+        get_keyword_future = self.get_keyword_client.call_async(self.get_keyword_request)
+        rclpy.spin_until_future_complete(self, get_keyword_future)
+        result = get_keyword_future.result()
+
+        if not result or not result.success:
+            self.get_logger().warn(f"get_keyword failed: {result.message if result else 'no response'}")
+            return
+
+        # 응답 형식: "beach umbrella bucket starfish"
+        tokens = result.message.split()
+        if len(tokens) < 2:
+            self.get_logger().warn(f"No props in response: '{result.message}'")
+            return
+
+        scene = tokens[0]
+        prop_list = tokens[1:]  # ["umbrella", "bucket", "starfish"]
+        self.get_logger().info(f"Scene: '{scene}'  Props: {prop_list}")
+
+        # ===== 스캔 위치로 이동 =====
+        self.get_logger().info(f"[1/N] Moving to scan_position: {SCAN_POSITION}")
+        movej(SCAN_POSITION, vel=VELOCITY, acc=ACC)
+        self.wait_motion()
+
+        # ===== 소품별 pick & deliver =====
+        for idx, prop in enumerate(prop_list, start=1):
+            self.get_logger().info(f"[prop {idx}/{len(prop_list)}] Target: '{prop}'")
+
+            target_pos = self.get_target_pos(prop)  # 기존 메서드 재사용
+            if target_pos is None:
+                self.get_logger().warn(f"  → '{prop}' not detected, skipping.")
+                continue
+
+            self.get_logger().info(f"  → 3D pos: {target_pos}")
+            self.pick_and_place_target(target_pos)  # 기존 메서드 재사용
+
+            # ===== 사용자 전달 위치로 이동 → 드랍 =====
+            self.get_logger().info(f"  → Moving to drop_position: {DROP_POSITION}")
+            movej(DROP_POSITION, vel=VELOCITY, acc=ACC)
+            self.wait_motion()
+
+            self.get_logger().info("  → Drop: open gripper")
+            gripper.open_gripper()
+            self.wait_gripper(1.5)
+
+            # 다음 소품을 위해 스캔 위치 복귀
+            if idx < len(prop_list):
+                self.get_logger().info("  → Return to scan_position for next prop")
+                movej(SCAN_POSITION, vel=VELOCITY, acc=ACC)
+                self.wait_motion()
+
+        # ===== 완료: 홈으로 복귀 =====
+        self.get_logger().info("[robot_control] All props delivered. Returning home.")
+        self.init_robot()
+
+    def get_target_pos(self, target):
+        self.get_position_request.target = target
+        self.get_logger().info("call depth position service with object_detection node")
+        get_position_future = self.get_position_client.call_async(
+            self.get_position_request
+        )
+        rclpy.spin_until_future_complete(self, get_position_future)
+
+        if get_position_future.result():
+            result = get_position_future.result().depth_position.tolist()
+            self.get_logger().info(f"Received depth position: {result}")
+            if sum(result) == 0:
+                print("No target position")
+                return None
+
+            gripper2cam_path = os.path.join(
+                package_path, "resource", "T_gripper2camera.npy"
+            )
+            robot_posx = get_current_posx()[0]
+            td_coord = self.transform_to_base(result, gripper2cam_path, robot_posx)
+
+            if td_coord[2] and sum(td_coord) != 0:
+                td_coord[2] += DEPTH_OFFSET
+                td_coord[2] = max(td_coord[2], MIN_DEPTH)
+
+            target_pos = list(td_coord[:3]) + robot_posx[3:]
+        return target_pos
+
+    def init_robot(self):
+        self.get_logger().info("[init_robot] move to JReady (home)")
+        JReady = [0, 0, 90, 0, 90, 0]
+        movej(JReady, vel=VELOCITY, acc=ACC)
+        self.wait_motion()
+        gripper.open_gripper()
+        self.wait_gripper(1.5)
+
+    def pick_and_place_target(self, target_pos):
+        # ===== 1. 타겟 상공 80mm 안전 접근 =====
+        approach_pos = target_pos.copy()
+        approach_pos[2] += 80
+        self.get_logger().info(f"[1/4] approach above target: {approach_pos}")
+        movel(approach_pos, vel=VELOCITY, acc=ACC)
+        if not self.wait_motion():
+            self.get_logger().error("approach move failed")
+            return
+
+        # ===== 2. 타겟까지 하강 (10mm 더 깊게) =====
+        target_pos[2] -= 30
+        self.get_logger().info(f"[2/4] descend to target: {target_pos}")
+        movel(target_pos, vel=VELOCITY, acc=ACC)
+        if not self.wait_motion():
+            self.get_logger().error("descend move failed")
+            return
+        time.sleep(0.3)
+
+        # ===== 3. 그리퍼 닫기 (물건 잡기) =====
+        self.get_logger().info("[3/4] close gripper")
+        gripper.close_gripper()
+        self.wait_gripper(2.5)
+
+        # ===== 4. 80mm 들어올리기 =====
+        target_pos_up = trans(target_pos, [0, 0, 80, 0, 0, 0]).tolist()
+        self.get_logger().info(f"[4/4] lift up: {target_pos_up}")
+        movel(target_pos_up, vel=VELOCITY, acc=ACC)
+        if not self.wait_motion():
+            self.get_logger().error("lift move failed")
+            return
+
+        # → 함수 종료 후 robot_control()에서 init_robot()을 호출 → 홈으로 복귀
+        #   홈 복귀 시 gripper.open_gripper()로 물건이 떨어짐
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = RobotControlNode()
-    DR_init.__dsr__node = node      # 두산 규칙 §1: 노드 연결
+    node = RobotController()
+    while rclpy.ok():
+        node.robot_control()
+    rclpy.shutdown()
+    node.destroy_node()
 
-    # ---- 두산 규칙 §2: 노드 생성 이후 import ----
-    try:
-        from DSR_ROBOT2 import (
-            movej, movel, wait, set_tool, set_tcp, DR_BASE
-        )
-        from DR_common2 import posx, posj
-    except ImportError as e:
-        print(f"Error importing DSR_ROBOT2 : {e}")
-        node.destroy_node()
-        rclpy.shutdown()
-        return
-
-    set_tool("Tool Weight_2FG")
-    set_tcp("2FG_TCP")
-
-    try:
-        from robot_control.onrobot import RG2
-        gripper = RG2()
-    except Exception as e:
-        node.get_logger().error(f"그리퍼 초기화 실패: {e}")
-        gripper = None
-
-    JReady = posj(node.home_joint)    
-    VELOCITY = node.velocity
-    ACC = node.acc
-
-    def go_home():
-        movej(JReady, vel=VELOCITY, acc=ACC)
-
-    def go_scan():
-        movel(posx(node.scan_posx), vel=VELOCITY, acc=ACC, ref=DR_BASE)
-
-    def pick_and_place(target_xyz):
-        base = list(target_xyz)
-        approach = posx([
-            base[0], base[1], base[2] + node.approach_z,
-            base[3], base[4], base[5],
-        ])
-        grip_pos = approach.copy()
-        grip_pos[2] -= (node.approach_z + node.grip_down_z)
-
-        if gripper: gripper.open()
-        movel(approach, vel=VELOCITY, acc=ACC, ref=DR_BASE)
-        movel(grip_pos, vel=VELOCITY, acc=ACC, ref=DR_BASE)
-        if gripper: gripper.close()
-        wait(0.5)
-
-        lift = grip_pos.copy()
-        lift[2] += node.lift_z
-        movel(lift, vel=VELOCITY, acc=ACC, ref=DR_BASE)
-
-        go_home()
-
-        place = posx(node.place_posx)
-        movel(place, vel=VELOCITY, acc=ACC, ref=DR_BASE)
-        if gripper: gripper.open()
-        wait(0.5)
-        go_home()
-
-    # 🟢 [수정 핵심] 실제 로봇을 구동하는 독립 작업자(Worker) 스레드
-    def robot_worker():
-        node.get_logger().info("🤖 로봇 모션 제어 워커 스레드 대기 중...")
-        go_home() # 시작 시 홈으로 초기화
-        
-        while rclpy.ok():
-            # 1. 스캔 위치 이동 명령이 들어왔을 때
-            if node.ready_event.is_set():
-                node.ready_event.clear()
-                node.get_logger().info("▶️ [명령 수신] 스캔(Ready) 위치로 이동합니다.")
-                go_scan()
-                
-            # 2. 픽업 명령이 들어왔을 때
-            if node.pick_event.is_set():
-                node.pick_event.clear()
-                node.get_logger().info("▶️ [명령 수신] 비전 좌표 요청 및 픽업 시작...")
-                # 비전 인식 노드에 대상 좌표 요청
-                target = node.request_position("all") 
-                if target:
-                    node.get_logger().info(f"✔️ 비전 좌표 수신 완료: {target}, 픽업 진행")
-                    pick_and_place(target)
-                else:
-                    node.get_logger().error("❌ 비전 좌표 수신 실패로 픽업을 취소하고 홈으로 복귀합니다.")
-                    go_home()
-                    
-            time.sleep(0.1)
-
-    # 작업자 스레드 시작
-    worker_thread = threading.Thread(target=robot_worker, daemon=True)
-    worker_thread.start()
-
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if gripper: gripper.release()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
 
 if __name__ == "__main__":
     main()

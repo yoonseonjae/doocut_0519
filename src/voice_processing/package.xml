@@ -2,15 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>voice_processing</name>
-  <version>0.1.0</version>
-  <description>인생DOO컷 음성 파이프라인: 웨이크워드 2종 + Whisper STT + GPT-4o 테마 추출</description>
-  <maintainer email="team@doocut.local">doocut_team</maintainer>
-  <license>Apache-2.0</license>
-
-  <exec_depend>rclpy</exec_depend>
-  <exec_depend>doocut_interfaces</exec_depend>
-  <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>python3-yaml</exec_depend>
+  <version>0.0.0</version>
+  <description>TODO: Package description</description>
+  <maintainer email="rokey@todo.todo">rokey</maintainer>
+  <license>TODO: License declaration</license>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

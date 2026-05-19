@@ -1,0 +1,20 @@
+# scene_map.yaml
+# 사용자 발화에서 추출된 scene 키워드 → 소품 목록 매핑 테이블
+# props 항목은 class_name_tool.json의 클래스명과 반드시 일치해야 합니다.
+#
+# class_name_tool.json 기준:
+#   "0": "pink", "1": "black", "2": "hat",
+#   "3": "wand", "4": "gun", "5": "crown", "6": "shovel"
+
+scenes:
+  birthday:
+    keywords: ["생일", "birthday", "파티", "생일파티", "생일 파티"]
+    props: ["pink", "hat"]
+
+  beach:
+    keywords: ["해변", "해변가", "바닷가", "beach", "바다"]
+    props: ["gun", "shovel", "black"]
+
+  princess:
+    keywords: ["공주", "princess", "왕관", "마법"]
+    props: ["crown", "wand"]
